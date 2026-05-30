@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% set active = 'logs' %}
+{% block content_class %}content-wide{% endblock %}
+{% block title %}Transaction Log{% endblock %}
+{% block heading %}Transaction Log{% endblock %}
+{% block topmeta %}
+  <form method="get" class="inline"><button class="btn btn-ghost" type="submit" title="Refresh">Refresh</button></form>
+{% endblock %}
+{% block content %}
+
+<div class="stats">
+  <div class="stat"><span class="stat-num">{{ stats['total'] or 0 }}</span><span class="stat-label">Total</span></div>
+  <div class="stat stat-ok"><span class="stat-num">{{ stats['sent'] or 0 }}</span><span class="stat-label">Sent</span></div>
+  <div class="stat stat-fail"><span class="stat-num">{{ stats['failed'] or 0 }}</span><span class="stat-label">Failed</span></div>
+  <div class="stat stat-warn"><span class="stat-num">{{ stats['unauthorized'] or 0 }}</span><span class="stat-label">Unauthorized</span></div>
+</div>
+
+<section class="card card-flush">
+  <div class="card-head card-head-split">
+    <span>Recent transactions <span class="muted smaller">(showing latest {{ shown }})</span></span>
+    {% if rows %}
+    <form method="post" action="{{ url_for('logs_clear') }}" onsubmit="return confirm('Clear the entire transaction log? This cannot be undone.')">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn btn-ghost btn-sm" type="submit">Clear log</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if rows %}
+  <div class="table-wrap">
+    <table class="log-table">
+      <thead>
+        <tr><th>Time (UTC)</th><th>Status</th><th>From</th><th>To</th><th>Subject</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <td class="nowrap mono">{{ r['ts'].replace('T',' ').replace('+00:00','') }}</td>
+          <td>
+            {% if r['status']=='sent' %}<span class="badge badge-ok">Sent</span>
+            {% elif r['status']=='failed' %}<span class="badge badge-fail">Failed</span>
+            {% elif r['status']=='unauthorized' %}<span class="badge badge-warn">Unauthorized</span>
+            {% else %}<span class="badge">{{ r['status'] }}</span>{% endif %}
+          </td>
+          <td class="trunc">{{ r['from_email'] or '—' }}</td>
+          <td class="trunc">{{ r['to_csv'] or '—' }}{% if r['recipients'] and r['recipients']>1 %} <span class="muted smaller">(+{{ r['recipients']-1 }})</span>{% endif %}</td>
+          <td class="trunc">{{ r['subject'] or '—' }}{% if r['attachments'] %} <span class="muted smaller">📎{{ r['attachments'] }}</span>{% endif %}</td>
+          <td class="detail muted smaller">{{ r['error'] or (r['source_ip'] or '') }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    <p>No transactions yet.</p>
+    <p class="muted smaller">Sends from the TSP app — and test emails from Settings — will appear here.</p>
+  </div>
+  {% endif %}
+</section>
+
+<p class="muted smaller auto-note">This page reflects the log at load time. Use <b>Refresh</b> to update.</p>
+{% endblock %}

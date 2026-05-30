@@ -1,0 +1,215 @@
+# TS Pro Relay
+
+[![Docker Hub](https://img.shields.io/badge/docker-viibeware%2Ftspro--relay-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/viibeware/tspro-relay)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+
+A small self-hosted **outbound email relay** for
+[Trusted Servants Pro](https://hub.docker.com/r/viibeware/trusted-servants-pro),
+for running the portal on hosts that **block outbound SMTP ports**
+(25/465/587) — most notably DigitalOcean droplets, but also many other
+cloud providers.
+
+Instead of the app connecting to an SMTP server directly, it POSTs each
+message as JSON to this relay over **HTTPS** (behind a reverse proxy).
+The relay runs somewhere with SMTP egress and performs the actual
+delivery. SMTP credentials live only on the relay, never in the app's
+database.
+
+```
+TSP app  ──HTTPS──▶  TS Pro Relay  ──SMTP:587/465──▶  mail server
+(no SMTP egress)     (this repo)                      (Gmail, SES, …)
+```
+
+## Admin interface
+
+The relay ships a **web interface with a login** so an operator can set
+everything up without editing JSON or env files:
+
+- **Transaction Log** — every send (and unauthorized attempt) with
+  status, sender, recipients, subject, and any error. Counters for
+  total / sent / failed / unauthorized.
+- **Settings** — the upstream SMTP server, a one-click **API key**
+  (reveal / copy / regenerate), an allowed-sender allowlist, attachment
+  size limit, a **Send test email** button, optional **Cloudflare
+  Turnstile** bot protection on the login page, and the **admin
+  password**.
+
+Configuration and the log are stored in a SQLite DB on the `./data`
+volume. The SMTP password and API key are encrypted at rest with a key
+derived from `RELAY_SECRET_KEY`.
+
+## Install
+
+The published image is on Docker Hub as
+[`viibeware/tspro-relay`](https://hub.docker.com/r/viibeware/tspro-relay).
+You don't need to clone this repo to run it — just a `docker-compose.yml`
+and a `.env`.
+
+### 1. Create a working directory
+
+```bash
+mkdir tspro-relay && cd tspro-relay
+```
+
+### 2. Create `docker-compose.yml`
+
+```yaml
+services:
+  relay:
+    image: viibeware/tspro-relay:latest
+    # The relay serves BOTH the admin UI and the JSON send API on one port.
+    # In production put a TLS-terminating reverse proxy in front (see below)
+    # and have the TSP app POST to the https:// URL.
+    ports:
+      - "0.0.0.0:8026:8000"
+    environment:
+      # Signs sessions AND derives the at-rest encryption key for the
+      # stored SMTP password + API key. REQUIRED — set a long random value.
+      #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+      - RELAY_SECRET_KEY=${RELAY_SECRET_KEY:?set RELAY_SECRET_KEY in .env}
+      # First-boot admin login (ignored once the admin row exists).
+      - RELAY_ADMIN_USER=${RELAY_ADMIN_USER:-admin}
+      - RELAY_ADMIN_PASSWORD=${RELAY_ADMIN_PASSWORD:-admin}
+      - RELAY_LOG_LEVEL=${RELAY_LOG_LEVEL:-INFO}
+      # Set to 1 ONLY for local HTTP testing without TLS.
+      - RELAY_INSECURE_COOKIES=${RELAY_INSECURE_COOKIES:-}
+    volumes:
+      - ./data:/data        # relay.db (settings, admin, transaction log)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+```
+
+### 3. Create `.env`
+
+```bash
+# Signs login sessions AND encrypts the stored SMTP password + API key.
+# REQUIRED. Generate a strong value:
+#   python -c "import secrets; print(secrets.token_urlsafe(48))"
+RELAY_SECRET_KEY=replace-with-a-long-random-value
+
+# First-boot admin login (change the password from the UI afterwards).
+RELAY_ADMIN_USER=admin
+RELAY_ADMIN_PASSWORD=change-me-on-first-login
+```
+
+### 4. Start it
+
+```bash
+docker compose up -d
+```
+
+The relay (UI + API) is now on **port 8026**. Open `http://<host>:8026`,
+sign in, and on **Settings** fill in your SMTP server and copy the API
+key.
+
+> **Building from source instead?** Clone this repo and use
+> `image:` → `build: .` in the compose file, then
+> `docker compose up -d --build`.
+
+## TLS in production
+
+The login cookie and Bearer token must never cross plaintext. Put a
+reverse proxy in front that terminates HTTPS and proxies to
+`127.0.0.1:8026`.
+
+**Caddy**
+```
+relay.example.com {
+    reverse_proxy 127.0.0.1:8026
+}
+```
+
+**nginx**
+```
+location / {
+    proxy_pass http://127.0.0.1:8026;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+}
+```
+
+Then point the TSP app at `https://relay.example.com`.
+
+## Configure the TSP app
+
+In the portal: **Settings → Domain / Email**
+
+1. **Sending method** → *API relay (HTTPS)*
+2. **Relay URL** → `https://relay.example.com`
+3. **Relay API key** → the key from the relay's Settings page
+4. **From email / From name** → your sender identity
+5. **Save Email Settings**, then **Send Test**. The result also lands in
+   the relay's Transaction Log.
+
+## API (consumed by the TSP app)
+
+### `POST /api/send`
+Header: `Authorization: Bearer <api-key>` · Body: JSON
+
+```json
+{
+  "from_email": "noreply@example.com",
+  "from_name": "Trusted Servants Pro",
+  "to": ["someone@example.org"],
+  "subject": "Hello",
+  "text": "Plain-text body",
+  "html": "<p>Optional HTML body</p>",
+  "reply_to": "replies@example.org",
+  "reply_to_name": "Replies",
+  "attachments": [
+    {"filename": "doc.pdf", "mime_type": "application/pdf", "content_b64": "..."}
+  ]
+}
+```
+
+`200 {"ok": true}` on success; otherwise `{"ok": false, "error": "..."}`
+with `401` (bad key), `403` (From not allowed), `413` (attachments too
+big), or `502` (SMTP failed).
+
+### `GET /healthz`
+Unauthenticated liveness probe; reports whether SMTP + an API key are
+configured, without leaking secrets.
+
+## Environment variables
+
+| Var | Required | Default | Notes |
+|-----|----------|---------|-------|
+| `RELAY_SECRET_KEY` | ✅ | — | Signs sessions + encrypts stored secrets. Keep it stable — rotating it invalidates the stored SMTP password + API key. |
+| `RELAY_ADMIN_USER` | | `admin` | First-boot admin username. |
+| `RELAY_ADMIN_PASSWORD` | | `admin` | First-boot password — change it in the UI. |
+| `RELAY_LOG_LEVEL` | | `INFO` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`. |
+| `RELAY_INSECURE_COOKIES` | | — | Set `1` only for local HTTP testing (no TLS). |
+| `RELAY_DATA_DIR` | | `/data` | Where `relay.db` lives. |
+
+Everything else (SMTP host/port/security/credentials, API key, allowed
+senders, attachment limit, Turnstile keys) is managed from the
+**Settings** page.
+
+## Local end-to-end test
+
+`docker-compose.test.yml` (in this repo) brings up the relay built from
+source plus a **Mailpit** SMTP sink to verify delivery. Mailpit's inbox
+is bound to localhost only; the relay UI is on the LAN. See the comments
+at the top of that file.
+
+## Security notes
+
+- Always run the UI + API behind TLS in production.
+- Change the seeded admin password immediately (Settings → Admin account).
+- Keep `RELAY_SECRET_KEY` long, random, and stable.
+- Use the **Allowed From** list so a leaked key can't be used to spoof
+  arbitrary senders.
+- Optionally enable **Cloudflare Turnstile** (Settings → Login bot
+  protection) to challenge the sign-in page. The relay needs outbound
+  HTTPS to `challenges.cloudflare.com` for verification.
+
+## License
+
+Released under the **GNU Affero General Public License v3.0** — see
+[LICENSE](LICENSE). If you run a modified version as a network service,
+the AGPL requires you to offer your users the corresponding source.

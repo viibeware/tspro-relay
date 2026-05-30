@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block bare %}
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="auth-logo" role="img" aria-label="Trusted Servants Pro"
+            style="--logo: url('{{ static_url('img/logo_tspro_white.svg') }}');"></span>
+      <p class="auth-tag">Email Relay</p>
+      <p class="muted">Sign in to manage the relay</p>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for cat, msg in messages %}
+          <div class="flash flash-{{ cat }}">{{ msg }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <form method="post" class="form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Username
+        <input name="username" type="text" autocomplete="username" autofocus required>
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+      {% if turnstile %}
+      <div class="cf-turnstile auth-turnstile" data-sitekey="{{ turnstile_site_key }}" data-theme="dark"></div>
+      {% endif %}
+      <button type="submit" class="btn btn-primary btn-block">Sign in</button>
+    </form>
+  </div>
+  {% if turnstile %}
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  {% endif %}
+  <p class="auth-foot muted">Trusted Servants Pro · outbound email relay · v{{ app_version }}</p>
+</div>
+{% endblock %}

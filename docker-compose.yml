@@ -1,0 +1,31 @@
+services:
+  relay:
+    build: .
+    # The relay serves BOTH the admin UI and the JSON send API on one port.
+    # Published on the LAN so operators can reach the interface; in
+    # production put a TLS-terminating reverse proxy in front (see README)
+    # and have the TSP app POST to the https:// URL.
+    ports:
+      - "0.0.0.0:8026:8000"
+    environment:
+      # Signs sessions AND derives the at-rest encryption key for the
+      # stored SMTP password + API key. REQUIRED — set a long random
+      # value. Rotating it invalidates stored secrets (re-enter them).
+      #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+      - RELAY_SECRET_KEY=${RELAY_SECRET_KEY:?set RELAY_SECRET_KEY in .env}
+      # First-boot admin login (ignored once the admin row exists).
+      - RELAY_ADMIN_USER=${RELAY_ADMIN_USER:-admin}
+      - RELAY_ADMIN_PASSWORD=${RELAY_ADMIN_PASSWORD:-admin}
+      - RELAY_LOG_LEVEL=${RELAY_LOG_LEVEL:-INFO}
+      # Set to 1 ONLY for local HTTP testing without TLS (allows the
+      # session cookie to be sent over plain HTTP). Leave unset in prod.
+      - RELAY_INSECURE_COOKIES=${RELAY_INSECURE_COOKIES:-}
+    volumes:
+      - ./data:/data        # relay.db (settings, admin, transaction log)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

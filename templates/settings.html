@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% set active = 'settings' %}
+{% block title %}Settings{% endblock %}
+{% block heading %}Settings{% endblock %}
+{% block content %}
+
+<section class="card">
+  <div class="card-head">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+    <span>SMTP delivery</span>
+  </div>
+  <p class="card-lead muted">The upstream mail server this relay uses to actually deliver messages. These are the credentials that normally can't be reached from the app's host.</p>
+  <form method="post" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="smtp">
+    <div class="row">
+      <label>SMTP host<input name="smtp_host" type="text" value="{{ s['smtp_host'] or '' }}" placeholder="smtp.example.com"></label>
+      <label>Port<input name="smtp_port" type="number" min="1" max="65535" value="{{ s['smtp_port'] or '' }}" placeholder="587"></label>
+    </div>
+    <div class="row">
+      <label>Username<input name="smtp_username" type="text" value="{{ s['smtp_username'] or '' }}" autocomplete="off"></label>
+      <label>Security
+        <select name="smtp_security">
+          {% for opt in security_choices %}
+          <option value="{{ opt }}" {{ 'selected' if s['smtp_security']==opt }}>
+            {{ {'starttls':'STARTTLS (587)','ssl':'SSL/TLS (465)','none':'None (plain)'}[opt] }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <label>Password
+      <input name="smtp_password" type="password" autocomplete="new-password"
+             placeholder="{{ '(leave blank to keep existing)' if s['smtp_password_enc'] else 'SMTP password' }}">
+    </label>
+    {% if s['smtp_password_enc'] %}
+    <label class="check"><input type="checkbox" name="smtp_password_clear" value="1"><span>Remove stored password</span></label>
+    {% endif %}
+    <div class="row">
+      <label>Default From email<input name="default_from" type="email" value="{{ s['default_from'] or '' }}" placeholder="noreply@example.com"></label>
+      <label>Default From name<input name="from_name" type="text" value="{{ s['from_name'] or '' }}" placeholder="Trusted Servants Pro"></label>
+    </div>
+    <label>Allowed From <span class="muted smaller">(optional)</span>
+      <input name="allowed_from" type="text" value="{{ s['allowed_from'] or '' }}" placeholder="example.org, noreply@example.org">
+      <span class="muted smaller">Comma-separated allowlist of sender addresses or domains. Leave blank to accept any From.</span>
+    </label>
+    <label>Max attachment size (MB)<input name="max_attach_mb" type="number" min="1" max="200" value="{{ s['max_attach_mb'] or 25 }}"></label>
+    <div class="card-actions"><button class="btn btn-primary">Save SMTP settings</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+    <span>API key</span>
+  </div>
+  <p class="card-lead muted">The shared secret the TSP app sends as a Bearer token. Paste this into the app under <b>Settings → Domain / Email → Relay API key</b>.</p>
+  <div class="keyfield">
+    <input id="apiKey" type="password" value="{{ api_key }}" readonly>
+    <button type="button" class="btn btn-ghost" onclick="(function(b){var i=document.getElementById('apiKey');i.type=i.type==='password'?'text':'password';b.textContent=i.type==='password'?'Reveal':'Hide';})(this)">Reveal</button>
+    <button type="button" class="btn btn-ghost" onclick="navigator.clipboard.writeText(document.getElementById('apiKey').value);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy</button>
+  </div>
+  <form method="post" onsubmit="return confirm('Generate a new API key? The TSP app will stop sending until you update its stored key to match.')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="regen_key">
+    <div class="card-actions"><button class="btn btn-warning">Generate new key</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+    <span>Send a test email</span>
+  </div>
+  <p class="card-lead muted">Delivers a test message through the SMTP settings above and records it in the transaction log.</p>
+  <form method="post" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="test">
+    <div class="row">
+      <label>Recipient<input name="test_to" type="email" placeholder="you@example.com"></label>
+      <div class="row-action"><button class="btn">Send test</button></div>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    <span>Login bot protection</span>
+  </div>
+  <p class="card-lead muted">Optionally protect the sign-in page with a <b>Cloudflare Turnstile</b> challenge. Create a Turnstile widget in your Cloudflare dashboard, then paste its keys here.</p>
+  <form method="post" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="turnstile">
+    <label class="check"><input type="checkbox" name="turnstile_enabled" value="1" {{ 'checked' if s['turnstile_enabled'] }}><span>Enable Turnstile challenge on login</span></label>
+    <label>Site key<input name="turnstile_site_key" type="text" value="{{ s['turnstile_site_key'] or '' }}" placeholder="0x4AAAAAAA..." autocomplete="off"></label>
+    <label>Secret key
+      <input name="turnstile_secret" type="password" autocomplete="new-password"
+             placeholder="{{ '(leave blank to keep existing)' if s['turnstile_secret_enc'] else '0x4AAAAAAA...' }}">
+    </label>
+    {% if s['turnstile_secret_enc'] %}
+    <label class="check"><input type="checkbox" name="turnstile_secret_clear" value="1"><span>Remove stored secret key</span></label>
+    {% endif %}
+    <div class="card-actions"><button class="btn btn-primary">Save bot protection</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    <span>Admin account</span>
+  </div>
+  <p class="card-lead muted">Change the username and password used to sign into this relay interface.</p>
+  <form method="post" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="password">
+    <label>Username<input name="username" type="text" value="{{ admin['username'] }}" autocomplete="username"></label>
+    <label>Current password<input name="current_password" type="password" autocomplete="current-password" required></label>
+    <div class="row">
+      <label>New password<input name="new_password" type="password" autocomplete="new-password" required></label>
+      <label>Confirm new password<input name="confirm_password" type="password" autocomplete="new-password" required></label>
+    </div>
+    <div class="card-actions"><button class="btn btn-primary">Update credentials</button></div>
+  </form>
+</section>
+
+{% endblock %}

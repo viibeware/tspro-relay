@@ -1,0 +1,45 @@
+# THROWAWAY end-to-end test stack — NOT for production.
+#   TSP app ──HTTP──▶ relay-test (UI + API) ──SMTP──▶ mailpit (sink)
+#
+# The relay is built from this repo and exposes its admin UI + API on the
+# LAN at :8026. Mailpit is an internal SMTP sink used only to capture what
+# the relay delivers — its web inbox is bound to localhost ONLY (not the
+# LAN), since the relay's own Transaction Log is the operator-facing view.
+# Joins the app's existing `tspro_default` network so the TSP app reaches
+# the relay at http://relay-test:8000 and the relay reaches mailpit:1025.
+#
+# Run:   RELAY_SECRET_KEY=$(cat /tmp/relay_secret.txt) \
+#          docker compose -f docker-compose.test.yml up -d --build
+# Relay UI:        http://<lan-ip>:8026   (login admin / admin)
+# Mailpit (local): http://127.0.0.1:8027  (verifies delivery)
+# Down:  docker compose -f docker-compose.test.yml down
+services:
+  relay-test:
+    build: .
+    container_name: relay-test
+    environment:
+      - RELAY_SECRET_KEY=${RELAY_SECRET_KEY:?set RELAY_SECRET_KEY}
+      - RELAY_ADMIN_USER=admin
+      - RELAY_ADMIN_PASSWORD=admin
+      - RELAY_INSECURE_COOKIES=1     # local HTTP testing only
+      - RELAY_LOG_LEVEL=INFO
+    volumes:
+      - ./data-test:/data
+    ports:
+      - "0.0.0.0:8026:8000"          # relay UI + API on the LAN
+    networks: [appnet]
+    depends_on: [mailpit]
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mailpit-test
+    ports:
+      - "127.0.0.1:8027:8025"        # inbox — localhost only, NOT the LAN
+    networks: [appnet]
+    restart: unless-stopped
+
+networks:
+  appnet:
+    name: tspro_default
+    external: true
