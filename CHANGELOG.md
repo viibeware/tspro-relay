@@ -4,6 +4,17 @@ All notable changes to TS Pro Relay are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] — 2026-05-31
+
+### Added
+- **Authenticated health probe** (`GET /api/health`) — Bearer-authenticated,
+  returns `{ok, configured, smtp_host_set, version}`. The Trusted Servants
+  Pro portal calls it to validate the relay URL **and** the shared API key
+  behind its "Test connection" status pill (Settings → Domain / Email),
+  without sending a message. Unlike `/healthz` — which stays unauthenticated
+  for liveness checks — this rejects a missing or incorrect key with `401`,
+  and reports whether the relay's own upstream SMTP delivery is configured.
+
 ## [0.1.0] — 2026-05-30
 
 Initial public release.
@@ -33,4 +44,5 @@ Initial public release.
   testing.
 - Branded UI matched to Trusted Servants Pro (TS Pro logo, gold accent).
 
+[0.1.1]: https://github.com/viibeware/tspro-relay/releases/tag/v0.1.1
 [0.1.0]: https://github.com/viibeware/tspro-relay/releases/tag/v0.1.0

@@ -41,7 +41,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("tsp-relay")
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 DATA_DIR = os.environ.get("RELAY_DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "relay.db")
@@ -416,6 +416,22 @@ def healthz():
     s = get_settings()
     return jsonify(ok=True, configured=bool(s and s["smtp_host"] and s["api_key_enc"]),
                    smtp_host_set=bool(s and s["smtp_host"]))
+
+
+@app.get("/api/health")
+def api_health():
+    """Authenticated health probe for the TSP app's relay connection
+    test. Unlike ``/healthz`` (public, reachability only), this checks
+    the Bearer API key — so the portal can confirm the key it holds
+    actually matches this relay — and reports whether the relay's own
+    SMTP delivery is configured (``configured``). Sends no mail."""
+    s = get_settings()
+    if not _authorized(s):
+        return jsonify(ok=False, error="Unauthorized"), 401
+    return jsonify(ok=True,
+                   configured=bool(s and s["smtp_host"]),
+                   smtp_host_set=bool(s and s["smtp_host"]),
+                   version=__version__)
 
 
 @app.post("/api/send")

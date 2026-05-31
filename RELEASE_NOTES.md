@@ -1,5 +1,24 @@
 # Release Notes
 
+## v0.1.1 — 2026-05-31
+
+A small follow-up that makes the portal's relay **connection test**
+trustworthy end-to-end.
+
+### What's new
+
+- **Authenticated health endpoint (`GET /api/health`).** Trusted Servants
+  Pro's **Settings → Domain / Email** tab now shows a live **connection
+  status pill** with a **Test connection** button for the API-relay
+  transport. Backing it, the relay gained a Bearer-authenticated health
+  probe that confirms both that the relay is reachable *and* that the API
+  key matches — and reports whether the relay's own upstream SMTP delivery
+  is configured — all without sending a test message. The existing public
+  `/healthz` liveness probe is unchanged.
+
+Upgrading is drop-in: pull `viibeware/tspro-relay:latest` (or `:0.1.1`)
+and recreate the container. No settings or data changes.
+
 ## v0.1.0 — 2026-05-30
 
 First public release of **TS Pro Relay**, the outbound email relay for
