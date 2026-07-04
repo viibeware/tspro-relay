@@ -4,6 +4,16 @@ All notable changes to TS Pro Relay are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.2] — 2026-07-04
+
+### Changed
+- **Project moved to the `hyprlab` organization.** The source repo is now
+  [`hyprlab/tspro-relay`](https://github.com/hyprlab/tspro-relay) on GitHub
+  and the published image is [`hyprlab/tspro-relay`](https://hub.docker.com/r/hyprlab/tspro-relay)
+  on Docker Hub. All references to the former `viibeware` account have been
+  updated. No code or behavior changes — pull `hyprlab/tspro-relay:latest`
+  (or `:0.1.2`) and recreate the container.
+
 ## [0.1.1] — 2026-05-31
 
 ### Added
@@ -44,5 +54,6 @@ Initial public release.
   testing.
 - Branded UI matched to Trusted Servants Pro (TS Pro logo, gold accent).
 
-[0.1.1]: https://github.com/viibeware/tspro-relay/releases/tag/v0.1.1
-[0.1.0]: https://github.com/viibeware/tspro-relay/releases/tag/v0.1.0
+[0.1.2]: https://github.com/hyprlab/tspro-relay/releases/tag/v0.1.2
+[0.1.1]: https://github.com/hyprlab/tspro-relay/releases/tag/v0.1.1
+[0.1.0]: https://github.com/hyprlab/tspro-relay/releases/tag/v0.1.0

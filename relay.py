@@ -41,7 +41,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("tsp-relay")
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 DATA_DIR = os.environ.get("RELAY_DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "relay.db")

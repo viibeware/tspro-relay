@@ -1,10 +1,10 @@
 # TS Pro Relay
 
-[![Docker Hub](https://img.shields.io/badge/docker-viibeware%2Ftspro--relay-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/viibeware/tspro-relay)
+[![Docker Hub](https://img.shields.io/badge/docker-hyprlab%2Ftspro--relay-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/hyprlab/tspro-relay)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 A small self-hosted **outbound email relay** for
-[Trusted Servants Pro](https://hub.docker.com/r/viibeware/trusted-servants-pro),
+[Trusted Servants Pro](https://hub.docker.com/r/hyprlab/trusted-servants-pro),
 for running the portal on hosts that **block outbound SMTP ports**
 (25/465/587) — most notably DigitalOcean droplets, but also many other
 cloud providers.
@@ -41,7 +41,7 @@ derived from `RELAY_SECRET_KEY`.
 ## Install
 
 The published image is on Docker Hub as
-[`viibeware/tspro-relay`](https://hub.docker.com/r/viibeware/tspro-relay).
+[`hyprlab/tspro-relay`](https://hub.docker.com/r/hyprlab/tspro-relay).
 You don't need to clone this repo to run it — just a `docker-compose.yml`
 and a `.env`.
 
@@ -56,7 +56,7 @@ mkdir tspro-relay && cd tspro-relay
 ```yaml
 services:
   relay:
-    image: viibeware/tspro-relay:latest
+    image: hyprlab/tspro-relay:latest
     # The relay serves BOTH the admin UI and the JSON send API on one port.
     # In production put a TLS-terminating reverse proxy in front (see below)
     # and have the TSP app POST to the https:// URL.

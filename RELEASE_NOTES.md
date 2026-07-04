@@ -1,5 +1,21 @@
 # Release Notes
 
+## v0.1.2 — 2026-07-04
+
+A maintenance release: the project has moved to the **`hyprlab`**
+organization on both GitHub and Docker Hub.
+
+### What's changed
+
+- **New home.** Source is now
+  [`hyprlab/tspro-relay`](https://github.com/hyprlab/tspro-relay) and the
+  image is [`hyprlab/tspro-relay`](https://hub.docker.com/r/hyprlab/tspro-relay).
+  Every reference to the former `viibeware` account has been updated.
+
+There are **no code or behavior changes**. Upgrading is drop-in: pull
+`hyprlab/tspro-relay:latest` (or `:0.1.2`) and recreate the container.
+No settings or data changes.
+
 ## v0.1.1 — 2026-05-31
 
 A small follow-up that makes the portal's relay **connection test**
@@ -16,13 +32,13 @@ trustworthy end-to-end.
   is configured — all without sending a test message. The existing public
   `/healthz` liveness probe is unchanged.
 
-Upgrading is drop-in: pull `viibeware/tspro-relay:latest` (or `:0.1.1`)
+Upgrading is drop-in: pull `hyprlab/tspro-relay:latest` (or `:0.1.1`)
 and recreate the container. No settings or data changes.
 
 ## v0.1.0 — 2026-05-30
 
 First public release of **TS Pro Relay**, the outbound email relay for
-[Trusted Servants Pro](https://hub.docker.com/r/viibeware/trusted-servants-pro).
+[Trusted Servants Pro](https://hub.docker.com/r/hyprlab/trusted-servants-pro).
 
 It exists so the portal can send mail on hosts that block outbound SMTP
 ports (25/465/587) — like DigitalOcean. The app POSTs each message to the
@@ -39,7 +55,7 @@ it. SMTP credentials never leave the relay.
 - **Secure by default** — Bearer-authenticated API, session login with
   CSRF protection, SMTP password + API key encrypted at rest, optional
   Cloudflare Turnstile on the login page, and a sender allowlist.
-- **Drop-in Docker deploy** — `viibeware/tspro-relay:latest`, one
+- **Drop-in Docker deploy** — `hyprlab/tspro-relay:latest`, one
   `docker-compose.yml` + `.env`, data persisted on a `/data` volume.
 
 ### Getting started
