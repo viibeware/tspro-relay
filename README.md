@@ -148,11 +148,13 @@ Two proxy-related settings worth adding:
   (it never knows whether TLS is in play); set it at the proxy, e.g.
   nginx `add_header Strict-Transport-Security "max-age=31536000" always;`
   (Caddy sends sensible defaults with a `header` directive).
-- **`RELAY_TRUSTED_PROXIES`** — set it to your proxy's address as seen by
-  the relay (for the compose setup above, the docker bridge, e.g.
-  `172.16.0.0/12`). Only then is `X-Forwarded-For` honoured for the
-  client IPs shown in the Transaction Log; otherwise the header is
-  ignored so clients can't spoof their logged address.
+- **`RELAY_TRUSTED_PROXIES`** (optional) — by default the relay trusts
+  `X-Forwarded-For` as-is for the client IPs shown in the Transaction
+  Log, which works out of the box behind one proxy hop but lets a
+  direct client spoof its logged address. Set this to your proxy's
+  address as seen by the relay (for the compose setup above, the docker
+  bridge, e.g. `172.16.0.0/12`) to honour the header only from your
+  proxy and make logged IPs spoof-proof.
 
 ## Configure the TSP app
 
@@ -205,7 +207,7 @@ Configuration state is available to authenticated callers via
 | `RELAY_SECRET_KEY` | ✅ | — | Signs sessions + encrypts stored secrets (HKDF-derived keys). The relay **refuses to start** without it. Keep it stable — rotating it invalidates the stored SMTP password + API key. Use 32+ chars. |
 | `RELAY_ADMIN_USER` | | `admin` | First-boot admin username. |
 | `RELAY_ADMIN_PASSWORD` | ✅ | — | First-boot password (compose refuses to start without it). If it is ever seeded as `admin`, the UI forces a password change at first login. |
-| `RELAY_TRUSTED_PROXIES` | | — | Comma-separated IPs/CIDRs of reverse proxies whose `X-Forwarded-For` is trusted for logged client IPs. Blank = log the direct peer. |
+| `RELAY_TRUSTED_PROXIES` | | — | Comma-separated IPs/CIDRs of reverse proxies. Blank = `X-Forwarded-For` trusted as-is (logged IPs are spoofable); set = header honoured only from these addresses. |
 | `RELAY_SEND_PER_HOUR` | | `60` | Per-IP ceiling on `/api/send` requests per hour; `0` disables. Login is separately throttled (5 failures/minute per IP). |
 | `RELAY_LOG_LEVEL` | | `INFO` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`. |
 | `RELAY_INSECURE_COOKIES` | | — | Set `1` only for local HTTP testing (no TLS). |
@@ -248,8 +250,9 @@ Operator checklist:
 - **Populate the Allowed From list.** Blank accepts any sender — set it
   so a leaked key can't spoof arbitrary addresses.
 - Keep `RELAY_SECRET_KEY` long (32+ chars), random, and stable.
-- Set `RELAY_TRUSTED_PROXIES` so Transaction Log IPs are accurate and
-  spoof-proof.
+- Set `RELAY_TRUSTED_PROXIES` if you want Transaction Log IPs to be
+  spoof-proof (by default the `X-Forwarded-For` header is trusted
+  as-is).
 - The API key is a plain bearer token with no replay protection — TLS
   end-to-end between the TSP app and the relay is what protects it.
 - Optionally enable **Cloudflare Turnstile** (Settings → Login bot

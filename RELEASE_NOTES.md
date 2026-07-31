@@ -1,5 +1,19 @@
 # Release Notes
 
+## v0.2.1 — 2026-07-31
+
+Fixes Transaction Log client IPs showing the docker gateway (172.x)
+instead of the real caller after upgrading to 0.2.0.
+
+- **`X-Forwarded-For` is trusted as-is again by default**, matching
+  0.1.x — no configuration needed behind a single reverse-proxy hop.
+- `RELAY_TRUSTED_PROXIES` is now purely opt-in hardening: when set, the
+  header is only honoured from those proxy IPs/CIDRs, making logged
+  source IPs spoof-proof. Leave it unset for the default behavior.
+
+Upgrading: `docker compose pull && docker compose up -d`. No other
+changes since 0.2.0.
+
 ## v0.2.0 — 2026-07-31
 
 A security-focused release following an internal security review of the

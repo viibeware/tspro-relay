@@ -47,7 +47,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("tsp-relay")
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 DATA_DIR = os.environ.get("RELAY_DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "relay.db")
@@ -412,21 +412,26 @@ _TRUSTED_PROXIES = _parse_trusted_proxies()
 
 
 def _client_ip():
-    # Honour X-Forwarded-For only when the request actually came from a
-    # configured reverse proxy (RELAY_TRUSTED_PROXIES, comma-separated
-    # IPs/CIDRs) — otherwise any client could spoof its logged source_ip.
+    # By default X-Forwarded-For is honoured as-is (single reverse-proxy
+    # hop — the expected production topology). Setting
+    # RELAY_TRUSTED_PROXIES (comma-separated IPs/CIDRs) restricts the
+    # header to requests that actually arrive from those proxies, which
+    # makes the logged source_ip spoof-proof.
     remote = request.remote_addr or "?"
     fwd = request.headers.get("X-Forwarded-For", "")
-    if fwd and _TRUSTED_PROXIES:
-        try:
-            trusted = any(ipaddress.ip_address(remote) in net
-                          for net in _TRUSTED_PROXIES)
-        except ValueError:
-            trusted = False
-        if trusted:
-            # Rightmost entry = the one appended by our own proxy hop;
-            # anything left of it is client-supplied and untrustworthy.
-            return fwd.split(",")[-1].strip() or remote
+    if not fwd:
+        return remote
+    if not _TRUSTED_PROXIES:
+        return fwd.split(",")[0].strip() or remote
+    try:
+        trusted = any(ipaddress.ip_address(remote) in net
+                      for net in _TRUSTED_PROXIES)
+    except ValueError:
+        trusted = False
+    if trusted:
+        # Rightmost entry = the one appended by our own proxy hop;
+        # anything left of it is client-supplied and untrustworthy.
+        return fwd.split(",")[-1].strip() or remote
     return remote
 
 

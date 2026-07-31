@@ -21,9 +21,9 @@ services:
       # Set to 1 ONLY for local HTTP testing without TLS (allows the
       # session cookie to be sent over plain HTTP). Leave unset in prod.
       - RELAY_INSECURE_COOKIES=${RELAY_INSECURE_COOKIES:-}
-      # Comma-separated IPs/CIDRs of reverse proxies whose X-Forwarded-For
-      # may be trusted for the logged client IP (e.g. 172.16.0.0/12).
-      # Leave blank to always log the direct peer address.
+      # Optional: comma-separated IPs/CIDRs of reverse proxies. Blank
+      # (default) trusts X-Forwarded-For as-is; when set, the header is
+      # honoured only from these addresses (spoof-proof logged IPs).
       - RELAY_TRUSTED_PROXIES=${RELAY_TRUSTED_PROXIES:-}
       # Per-IP ceiling on /api/send requests (0 disables). Default 60.
       - RELAY_SEND_PER_HOUR=${RELAY_SEND_PER_HOUR:-60}

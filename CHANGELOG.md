@@ -4,6 +4,18 @@ All notable changes to TS Pro Relay are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-07-31
+
+### Changed
+- **`X-Forwarded-For` is trusted as-is again by default** (0.1.x
+  behavior), so Transaction Log client IPs work out of the box behind a
+  reverse proxy. 0.2.0 ignored the header unless `RELAY_TRUSTED_PROXIES`
+  was configured, which logged the docker gateway (172.x) instead of the
+  real client on typical single-proxy deployments whose compose files
+  don't yet pass that variable through. `RELAY_TRUSTED_PROXIES` remains
+  available as an opt-in: when set, the header is honoured only from
+  those proxy addresses, making logged IPs spoof-proof.
+
 ## [0.2.0] — 2026-07-31
 
 Security-focused release following an internal security review. Existing
@@ -109,6 +121,7 @@ Initial public release.
   testing.
 - Branded UI matched to Trusted Servants Pro (TS Pro logo, gold accent).
 
+[0.2.1]: https://github.com/hyprlab/tspro-relay/releases/tag/v0.2.1
 [0.2.0]: https://github.com/hyprlab/tspro-relay/releases/tag/v0.2.0
 [0.1.2]: https://github.com/hyprlab/tspro-relay/releases/tag/v0.1.2
 [0.1.1]: https://github.com/hyprlab/tspro-relay/releases/tag/v0.1.1
