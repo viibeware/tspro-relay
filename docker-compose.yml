@@ -14,12 +14,19 @@ services:
       #   python -c "import secrets; print(secrets.token_urlsafe(48))"
       - RELAY_SECRET_KEY=${RELAY_SECRET_KEY:?set RELAY_SECRET_KEY in .env}
       # First-boot admin login (ignored once the admin row exists).
+      # REQUIRED — the relay no longer falls back to admin/admin.
       - RELAY_ADMIN_USER=${RELAY_ADMIN_USER:-admin}
-      - RELAY_ADMIN_PASSWORD=${RELAY_ADMIN_PASSWORD:-admin}
+      - RELAY_ADMIN_PASSWORD=${RELAY_ADMIN_PASSWORD:?set RELAY_ADMIN_PASSWORD in .env}
       - RELAY_LOG_LEVEL=${RELAY_LOG_LEVEL:-INFO}
       # Set to 1 ONLY for local HTTP testing without TLS (allows the
       # session cookie to be sent over plain HTTP). Leave unset in prod.
       - RELAY_INSECURE_COOKIES=${RELAY_INSECURE_COOKIES:-}
+      # Comma-separated IPs/CIDRs of reverse proxies whose X-Forwarded-For
+      # may be trusted for the logged client IP (e.g. 172.16.0.0/12).
+      # Leave blank to always log the direct peer address.
+      - RELAY_TRUSTED_PROXIES=${RELAY_TRUSTED_PROXIES:-}
+      # Per-IP ceiling on /api/send requests (0 disables). Default 60.
+      - RELAY_SEND_PER_HOUR=${RELAY_SEND_PER_HOUR:-60}
     volumes:
       - ./data:/data        # relay.db (settings, admin, transaction log)
     restart: unless-stopped

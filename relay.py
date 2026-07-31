@@ -20,17 +20,23 @@ import base64
 import functools
 import hashlib
 import hmac
+import ipaddress
 import logging
 import os
 import secrets
 import smtplib
 import sqlite3
 import ssl
+import sys
+import time
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from email.utils import formataddr, parseaddr
+from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from flask import (Flask, abort, flash, g, jsonify, redirect, render_template,
                    request, session, url_for)
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -41,13 +47,20 @@ logging.basicConfig(
 )
 log = logging.getLogger("tsp-relay")
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 DATA_DIR = os.environ.get("RELAY_DATA_DIR", "/data")
 DB_PATH = os.path.join(DATA_DIR, "relay.db")
 SECURITY_CHOICES = ("none", "starttls", "ssl")
 LOG_KEEP = 2000          # rows retained; older transactions are pruned
 LOG_PAGE = 200           # rows shown on the log page
+MAX_RECIPIENTS = 100     # per message — bounds spam amplification if the key leaks
+ERROR_CLIP = 300         # max chars of error detail stored in txn_log
+
+# Rate limits (per client IP, sliding window).
+LOGIN_MAX_FAILURES = 5   # failed logins allowed per LOGIN_WINDOW_S
+LOGIN_WINDOW_S = 60
+SEND_PER_HOUR = int(os.environ.get("RELAY_SEND_PER_HOUR", "60") or 0)  # 0 disables
 
 app = Flask(__name__)
 
@@ -55,11 +68,32 @@ app = Flask(__name__)
 # --------------------------------------------------------------------------
 # Secrets / crypto
 # --------------------------------------------------------------------------
-def _seed():
-    return (os.environ.get("RELAY_SECRET_KEY", "").strip() or "dev-insecure-change-me")
+def _load_secret():
+    key = os.environ.get("RELAY_SECRET_KEY", "").strip()
+    if not key or key == "dev-insecure-change-me":
+        log.critical(
+            "RELAY_SECRET_KEY is not set. It signs sessions and encrypts "
+            "stored secrets — refusing to start without one. Generate one "
+            "with: python -c \"import secrets; print(secrets.token_urlsafe(48))\"")
+        # 3 == gunicorn's WORKER_BOOT_ERROR: makes the master shut down
+        # instead of respawning the doomed worker forever.
+        sys.exit(3)
+    if len(key) < 32:
+        log.warning("RELAY_SECRET_KEY is shorter than 32 characters — "
+                    "use a longer random value")
+    return key
 
 
-app.secret_key = hashlib.sha256((_seed() + "|session").encode()).hexdigest()
+_SECRET = _load_secret()
+_KDF_SALT = b"tsp-relay-hkdf-v1"
+
+
+def _derive_key(info):
+    return HKDF(algorithm=hashes.SHA256(), length=32,
+                salt=_KDF_SALT, info=info).derive(_SECRET.encode())
+
+
+app.secret_key = _derive_key(b"relay-session")
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
@@ -67,30 +101,37 @@ app.config.update(
     # HTTP only when explicitly opted in for local testing.
     SESSION_COOKIE_SECURE=os.environ.get("RELAY_INSECURE_COOKIES", "").lower()
     not in ("1", "true", "yes"),
+    # Hard ceiling; /api/send additionally enforces a dynamic cap derived
+    # from the configured max attachment size before reading the body.
     MAX_CONTENT_LENGTH=64 * 1024 * 1024,
 )
 
-
-def _fernet():
-    key = base64.urlsafe_b64encode(hashlib.sha256(_seed().encode()).digest())
-    return Fernet(key)
+_FERNET = Fernet(base64.urlsafe_b64encode(_derive_key(b"relay-fernet")))
+# Pre-0.2.0 scheme (unsalted SHA-256 of the seed). Kept only so init_db()
+# can transparently re-encrypt values stored by earlier releases.
+_LEGACY_FERNET = Fernet(base64.urlsafe_b64encode(hashlib.sha256(_SECRET.encode()).digest()))
 
 
 def encrypt(value):
     if not value:
         return None
-    return _fernet().encrypt(value.encode()).decode()
+    return _FERNET.encrypt(value.encode()).decode()
 
 
 def decrypt(token):
     if not token:
         return ""
     try:
-        return _fernet().decrypt(token.encode()).decode()
+        return _FERNET.decrypt(token.encode()).decode()
     except (InvalidToken, ValueError, TypeError):
         log.warning("decrypt failed — RELAY_SECRET_KEY may have changed; "
                     "re-enter the affected value")
         return ""
+
+
+def _clip(text, n=ERROR_CLIP):
+    text = str(text or "")
+    return text if len(text) <= n else text[: n - 1] + "…"
 
 
 # --------------------------------------------------------------------------
@@ -132,7 +173,8 @@ def init_db():
         );
         CREATE TABLE IF NOT EXISTS admin (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            username TEXT NOT NULL, password_hash TEXT NOT NULL
+            username TEXT NOT NULL, password_hash TEXT NOT NULL,
+            must_change_password INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS txn_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,6 +184,16 @@ def init_db():
             recipients INTEGER NOT NULL DEFAULT 0,
             attachments INTEGER NOT NULL DEFAULT 0,
             error TEXT, source_ip TEXT
+        );
+        CREATE TABLE IF NOT EXISTS rate_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL, key TEXT NOT NULL, ts REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_rate_events ON rate_events (scope, key, ts);
+        CREATE TABLE IF NOT EXISTS settings_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL, username TEXT, action TEXT NOT NULL,
+            source_ip TEXT
         );
         """
     )
@@ -164,25 +216,75 @@ def init_db():
                 # sees "duplicate column name" — tolerate it.
                 if "duplicate column name" not in str(e).lower():
                     raise
-    # Seed the settings singleton.
+    have_admin = {r[1] for r in con.execute("PRAGMA table_info(admin)")}
+    if "must_change_password" not in have_admin:
+        try:
+            con.execute("ALTER TABLE admin ADD COLUMN "
+                        "must_change_password INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+        else:
+            # Existing install still on the seeded default password —
+            # force a change on next login.
+            row = con.execute("SELECT password_hash FROM admin WHERE id=1").fetchone()
+            if row and check_password_hash(row[0], "admin"):
+                con.execute("UPDATE admin SET must_change_password=1 WHERE id=1")
+    # Seed the settings singleton. OR IGNORE: two workers can race on
+    # first boot — the loser's insert is a no-op.
     if not con.execute("SELECT 1 FROM settings WHERE id=1").fetchone():
         con.execute(
-            "INSERT INTO settings (id, smtp_port, smtp_security, max_attach_mb, api_key_enc) "
+            "INSERT OR IGNORE INTO settings "
+            "(id, smtp_port, smtp_security, max_attach_mb, api_key_enc) "
             "VALUES (1, ?, ?, ?, ?)",
-            (587, "starttls", 25,
-             _fernet().encrypt(secrets.token_urlsafe(36).encode()).decode()),
+            (587, "starttls", 25, encrypt(secrets.token_urlsafe(36))),
         )
+    _reencrypt_legacy_secrets(con)
     # Seed the admin from env (first boot only).
     if not con.execute("SELECT 1 FROM admin WHERE id=1").fetchone():
         user = (os.environ.get("RELAY_ADMIN_USER", "").strip() or "admin")
         pw = (os.environ.get("RELAY_ADMIN_PASSWORD", "").strip() or "admin")
-        if pw == "admin":
-            log.warning("seeding admin/admin — set RELAY_ADMIN_PASSWORD and "
-                        "change it from the UI immediately")
-        con.execute("INSERT INTO admin (id, username, password_hash) VALUES (1, ?, ?)",
-                    (user, generate_password_hash(pw)))
+        must_change = 1 if pw == "admin" else 0
+        if must_change:
+            log.warning("RELAY_ADMIN_PASSWORD is not set — seeding a locked "
+                        "admin/admin account; the UI will force a password "
+                        "change at first login")
+        con.execute(
+            "INSERT OR IGNORE INTO admin "
+            "(id, username, password_hash, must_change_password) "
+            "VALUES (1, ?, ?, ?)",
+            (user, generate_password_hash(pw), must_change))
     con.commit()
     con.close()
+
+
+def _reencrypt_legacy_secrets(con):
+    """One-shot migration: values encrypted under the pre-0.2.0 scheme
+    (raw SHA-256 as the Fernet key) are decrypted with the legacy key and
+    re-encrypted under the HKDF-derived key. Values that decrypt with
+    neither (RELAY_SECRET_KEY rotated) are left alone; decrypt() warns at
+    use time and the operator re-enters them in the UI."""
+    row = con.execute("SELECT smtp_password_enc, api_key_enc, turnstile_secret_enc "
+                      "FROM settings WHERE id=1").fetchone()
+    if not row:
+        return
+    for idx, col in enumerate(("smtp_password_enc", "api_key_enc",
+                               "turnstile_secret_enc")):
+        tok = row[idx]
+        if not tok:
+            continue
+        try:
+            _FERNET.decrypt(tok.encode())
+            continue                      # already on the new scheme
+        except InvalidToken:
+            pass
+        try:
+            val = _LEGACY_FERNET.decrypt(tok.encode())
+        except InvalidToken:
+            continue
+        con.execute(f"UPDATE settings SET {col}=? WHERE id=1",
+                    (_FERNET.encrypt(val).decode(),))
+        log.info("re-encrypted %s under the new key-derivation scheme", col)
 
 
 def get_settings():
@@ -206,6 +308,43 @@ def add_log(status, from_email="", to_csv="", subject="", recipients=0,
     db.execute(
         "DELETE FROM txn_log WHERE id NOT IN "
         "(SELECT id FROM txn_log ORDER BY id DESC LIMIT ?)", (LOG_KEEP,))
+    db.commit()
+
+
+def audit(action):
+    """Record who changed what (settings, credentials, log clears)."""
+    a = get_admin()
+    db = get_db()
+    db.execute(
+        "INSERT INTO settings_audit (ts, username, action, source_ip) VALUES (?,?,?,?)",
+        (datetime.now(timezone.utc).isoformat(timespec="seconds"),
+         a["username"] if a else None, action, _client_ip()))
+    db.commit()
+
+
+# --------------------------------------------------------------------------
+# Rate limiting (sliding window, shared across workers via SQLite)
+# --------------------------------------------------------------------------
+def rate_count(scope, key, window_s):
+    """Prune events older than the window, return how many remain for key."""
+    db = get_db()
+    now = time.time()
+    db.execute("DELETE FROM rate_events WHERE scope=? AND ts<?", (scope, now - window_s))
+    return db.execute(
+        "SELECT COUNT(*) FROM rate_events WHERE scope=? AND key=?",
+        (scope, key)).fetchone()[0]
+
+
+def rate_record(scope, key):
+    db = get_db()
+    db.execute("INSERT INTO rate_events (scope, key, ts) VALUES (?,?,?)",
+               (scope, key, time.time()))
+    db.commit()
+
+
+def rate_clear(scope, key):
+    db = get_db()
+    db.execute("DELETE FROM rate_events WHERE scope=? AND key=?", (scope, key))
     db.commit()
 
 
@@ -256,12 +395,39 @@ def _inject():
             "static_url": static_url, "app_version": __version__}
 
 
+def _parse_trusted_proxies():
+    nets = []
+    for part in os.environ.get("RELAY_TRUSTED_PROXIES", "").replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            log.warning("ignoring invalid RELAY_TRUSTED_PROXIES entry: %r", part)
+    return nets
+
+
+_TRUSTED_PROXIES = _parse_trusted_proxies()
+
+
 def _client_ip():
-    # Honour a single reverse-proxy hop (the expected production topology).
+    # Honour X-Forwarded-For only when the request actually came from a
+    # configured reverse proxy (RELAY_TRUSTED_PROXIES, comma-separated
+    # IPs/CIDRs) — otherwise any client could spoof its logged source_ip.
+    remote = request.remote_addr or "?"
     fwd = request.headers.get("X-Forwarded-For", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return request.remote_addr or "?"
+    if fwd and _TRUSTED_PROXIES:
+        try:
+            trusted = any(ipaddress.ip_address(remote) in net
+                          for net in _TRUSTED_PROXIES)
+        except ValueError:
+            trusted = False
+        if trusted:
+            # Rightmost entry = the one appended by our own proxy hop;
+            # anything left of it is client-supplied and untrustworthy.
+            return fwd.split(",")[-1].strip() or remote
+    return remote
 
 
 def turnstile_active(s):
@@ -296,10 +462,55 @@ def verify_turnstile(s, token):
             "https://challenges.cloudflare.com/turnstile/v0/siteverify", data=data)
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read().decode())
-        return bool(body.get("success"))
+        if not body.get("success"):
+            return False
+        # The token must have been solved on THIS site, not harvested from
+        # a widget embedded elsewhere with the same site key.
+        solved_on = (body.get("hostname") or "").lower()
+        expected = (request.host or "").split(":")[0].lower()
+        if solved_on and expected and solved_on != expected:
+            log.warning("turnstile hostname mismatch: token solved on %r, "
+                        "expected %r", solved_on, expected)
+            return False
+        return True
     except Exception as e:  # noqa: BLE001
         log.warning("turnstile verify failed: %s", e)
         return False
+
+
+# --------------------------------------------------------------------------
+# Request/response hooks
+# --------------------------------------------------------------------------
+@app.before_request
+def _force_password_change():
+    """While the admin account still has its seeded default password,
+    a signed-in operator can only reach Settings (to change it) and
+    sign out. API endpoints are unaffected (no session)."""
+    if not session.get("uid"):
+        return None
+    if request.endpoint in (None, "static", "settings", "logout"):
+        return None
+    a = get_admin()
+    if a and a["must_change_password"]:
+        flash("Change the default admin password before continuing.", "danger")
+        return redirect(url_for("settings"))
+    return None
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    csp = ("default-src 'self'; script-src 'self'; "
+           "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+           "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+    if request.endpoint == "login" and turnstile_active(get_settings()):
+        csp = (csp.replace("script-src 'self'",
+                           "script-src 'self' https://challenges.cloudflare.com")
+               + "; frame-src https://challenges.cloudflare.com")
+    resp.headers["Content-Security-Policy"] = csp
+    return resp
 
 
 # --------------------------------------------------------------------------
@@ -340,6 +551,8 @@ def deliver(s, payload):
         return False, "from_email is not permitted by this relay", meta
     if not recipients:
         return False, "At least one recipient is required", meta
+    if len(recipients) > MAX_RECIPIENTS:
+        return False, f"Too many recipients (max {MAX_RECIPIENTS} per message)", meta
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -357,6 +570,10 @@ def deliver(s, payload):
     for att in (payload.get("attachments") or []):
         if not isinstance(att, dict) or not att.get("content_b64"):
             continue
+        # Reject on the encoded length first so an oversized attachment
+        # is never decoded into memory (b64 inflates ~4/3 over the raw).
+        if total + (len(att["content_b64"]) * 3) // 4 - 3 > max_bytes:
+            return False, "Attachments exceed the relay size limit", meta
         try:
             blob = base64.b64decode(att["content_b64"])
         except (ValueError, TypeError):
@@ -394,7 +611,12 @@ def deliver(s, payload):
                     srv.login(username, password)
                 srv.send_message(msg)
     except Exception as e:  # noqa: BLE001
-        return False, f"SMTP delivery failed: {e}", meta
+        # Full detail goes to the internal log only; a clipped copy lands
+        # in meta for the admin-only transaction log. API callers get the
+        # generic message (no upstream hostnames / server banner data).
+        log.warning("smtp delivery failed (host=%s): %s", host, e)
+        meta["detail"] = _clip(e)
+        return False, "SMTP delivery failed", meta
     return True, None, meta
 
 
@@ -413,9 +635,9 @@ def _authorized(s):
 
 @app.get("/healthz")
 def healthz():
-    s = get_settings()
-    return jsonify(ok=True, configured=bool(s and s["smtp_host"] and s["api_key_enc"]),
-                   smtp_host_set=bool(s and s["smtp_host"]))
+    # Liveness only — configuration state is available to authenticated
+    # callers via /api/health instead.
+    return jsonify(ok=True)
 
 
 @app.get("/api/health")
@@ -437,9 +659,35 @@ def api_health():
 @app.post("/api/send")
 def api_send():
     s = get_settings()
+    ip = _client_ip()
+
+    # Per-IP ceiling (checked before auth, so it also bounds API-key
+    # guessing). Throttled requests still slide the window; only the
+    # first throttled hit per window lands in the transaction log.
+    if SEND_PER_HOUR:
+        n = rate_count("api_send", ip, 3600)
+        if n >= SEND_PER_HOUR:
+            rate_record("api_send", ip)
+            if n == SEND_PER_HOUR:
+                add_log("rate_limited",
+                        error=f"Send rate limit exceeded ({SEND_PER_HOUR}/hour per IP)",
+                        source_ip=ip)
+            return jsonify(ok=False, error="Rate limit exceeded — try again later"), 429
+        rate_record("api_send", ip)
+
     if not _authorized(s):
-        add_log("unauthorized", error="Bad or missing API key", source_ip=_client_ip())
+        add_log("unauthorized", error="Bad or missing API key", source_ip=ip)
         return jsonify(ok=False, error="Unauthorized"), 401
+
+    # Enforce the configured attachment budget before reading the body
+    # (MAX_CONTENT_LENGTH is only a hard ceiling). ~4/3 covers the base64
+    # inflation; 1 MB covers JSON framing and the message bodies.
+    cap = int(s["max_attach_mb"] or 25) * 1024 * 1024 * 4 // 3 + 1024 * 1024
+    if request.content_length and request.content_length > cap:
+        add_log("failed", error="Request body exceeds the relay size limit",
+                source_ip=ip)
+        return jsonify(ok=False, error="Request body exceeds the relay size limit"), 413
+
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify(ok=False, error="Expected a JSON object body"), 400
@@ -448,14 +696,15 @@ def api_send():
     add_log("sent" if ok else "failed", from_email=meta["from_email"],
             to_csv=meta["to_csv"], subject=meta["subject"],
             recipients=meta["recipients"], attachments=meta["attachments"],
-            error=err or "", source_ip=_client_ip())
+            error=meta.get("detail") or err or "", source_ip=ip)
     if ok:
         log.info("relayed to %d recipient(s) from %s", meta["recipients"], meta["from_email"])
         return jsonify(ok=True)
     code = 403 if "not permitted" in (err or "") else (
         413 if "size limit" in (err or "") else (
             500 if "not configured" in (err or "") else (
-                400 if "required" in (err or "") or "base64" in (err or "") else 502)))
+                400 if "required" in (err or "") or "base64" in (err or "")
+                or "Too many recipients" in (err or "") else 502)))
     return jsonify(ok=False, error=err), code
 
 
@@ -472,6 +721,11 @@ def login():
     s = get_settings()
     if request.method == "POST":
         check_csrf()
+        ip = _client_ip()
+        if rate_count("login_fail", ip, LOGIN_WINDOW_S) >= LOGIN_MAX_FAILURES:
+            flash("Too many failed attempts — wait a minute and try again.", "danger")
+            return render_template("login.html", turnstile=turnstile_active(s),
+                                   turnstile_site_key=s["turnstile_site_key"]), 429
         if turnstile_active(s) and not verify_turnstile(
                 s, request.form.get("cf-turnstile-response", "")):
             flash("Bot challenge failed — please try again.", "danger")
@@ -480,14 +734,24 @@ def login():
         a = get_admin()
         u = (request.form.get("username") or "").strip()
         p = request.form.get("password") or ""
-        if a and u == a["username"] and check_password_hash(a["password_hash"], p):
+        if a and hmac.compare_digest(u.encode(), a["username"].encode()) \
+                and check_password_hash(a["password_hash"], p):
             session.clear()
             session["uid"] = 1
             csrf_token()
+            rate_clear("login_fail", ip)
             nxt = request.args.get("next") or url_for("logs")
-            if not nxt.startswith("/"):
+            # Reject anything that isn't a local path: absolute URLs,
+            # scheme-relative ("//evil.com"), or backslash tricks.
+            parts = urlsplit(nxt.replace("\\", "/"))
+            if parts.scheme or parts.netloc or not nxt.startswith("/"):
                 nxt = url_for("logs")
             return redirect(nxt)
+        rate_record("login_fail", ip)
+        if rate_count("login_fail", ip, LOGIN_WINDOW_S) >= LOGIN_MAX_FAILURES:
+            add_log("rate_limited",
+                    error=f"Login throttled after {LOGIN_MAX_FAILURES} failures",
+                    source_ip=ip)
         flash("Incorrect username or password.", "danger")
     return render_template("login.html", turnstile=turnstile_active(s),
                            turnstile_site_key=s["turnstile_site_key"] if s else None)
@@ -542,12 +806,14 @@ def settings():
             elif new_pw:
                 db.execute("UPDATE settings SET smtp_password_enc=? WHERE id=1", (encrypt(new_pw),))
             db.commit()
+            audit("smtp settings updated")
             flash("SMTP settings saved.", "success")
 
         elif action == "regen_key":
             db.execute("UPDATE settings SET api_key_enc=? WHERE id=1",
                        (encrypt(secrets.token_urlsafe(36)),))
             db.commit()
+            audit("api key regenerated")
             flash("A new API key was generated. Update it in the TSP app.", "success")
 
         elif action == "password":
@@ -562,12 +828,14 @@ def settings():
             elif new != conf:
                 flash("New passwords do not match.", "danger")
             else:
-                db.execute("UPDATE admin SET password_hash=? WHERE id=1",
+                db.execute("UPDATE admin SET password_hash=?, "
+                           "must_change_password=0 WHERE id=1",
                            (generate_password_hash(new),))
                 new_user = (request.form.get("username") or "").strip()
                 if new_user:
                     db.execute("UPDATE admin SET username=? WHERE id=1", (new_user,))
                 db.commit()
+                audit("admin credentials updated")
                 flash("Admin credentials updated.", "success")
 
         elif action == "turnstile":
@@ -586,6 +854,7 @@ def settings():
                             and row["turnstile_secret_enc"]) else 0
             db.execute("UPDATE settings SET turnstile_enabled=? WHERE id=1", (enabled,))
             db.commit()
+            audit("turnstile settings updated")
             if wants and not enabled:
                 flash("Enter both the site key and secret key to enable the challenge.",
                       "danger")
@@ -605,9 +874,13 @@ def settings():
                 })
                 add_log("sent" if ok else "failed", from_email=meta["from_email"],
                         to_csv=meta["to_csv"], subject=meta["subject"],
-                        recipients=meta["recipients"], error=err or "",
+                        recipients=meta["recipients"],
+                        error=meta.get("detail") or err or "",
                         source_ip="(relay UI test)")
-                flash(f"Test email sent to {to}." if ok else f"Test failed: {err}",
+                # The operator sees the full SMTP detail here; API callers
+                # only ever get the generic message.
+                flash(f"Test email sent to {to}." if ok
+                      else f"Test failed: {meta.get('detail') or err}",
                       "success" if ok else "danger")
         return redirect(url_for("settings"))
 
@@ -637,6 +910,7 @@ def logs_clear():
     check_csrf()
     get_db().execute("DELETE FROM txn_log")
     get_db().commit()
+    audit("transaction log cleared")
     flash("Transaction log cleared.", "success")
     return redirect(url_for("logs"))
 

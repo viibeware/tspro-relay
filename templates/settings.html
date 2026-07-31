@@ -4,6 +4,14 @@
 {% block heading %}Settings{% endblock %}
 {% block content %}
 
+{% if admin['must_change_password'] %}
+<div class="flash flash-danger">
+  <b>Action required:</b> this relay is still using the seeded default
+  admin password. Set a new password under <b>Admin account</b> below —
+  the rest of the interface stays locked until you do.
+</div>
+{% endif %}
+
 <section class="card">
   <div class="card-head">
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
@@ -57,10 +65,10 @@
   <p class="card-lead muted">The shared secret the TSP app sends as a Bearer token. Paste this into the app under <b>Settings → Domain / Email → Relay API key</b>.</p>
   <div class="keyfield">
     <input id="apiKey" type="password" value="{{ api_key }}" readonly>
-    <button type="button" class="btn btn-ghost" onclick="(function(b){var i=document.getElementById('apiKey');i.type=i.type==='password'?'text':'password';b.textContent=i.type==='password'?'Reveal':'Hide';})(this)">Reveal</button>
-    <button type="button" class="btn btn-ghost" onclick="navigator.clipboard.writeText(document.getElementById('apiKey').value);this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)">Copy</button>
+    <button type="button" class="btn btn-ghost" data-reveal="apiKey">Reveal</button>
+    <button type="button" class="btn btn-ghost" data-copy="apiKey">Copy</button>
   </div>
-  <form method="post" onsubmit="return confirm('Generate a new API key? The TSP app will stop sending until you update its stored key to match.')">
+  <form method="post" data-confirm="Generate a new API key? The TSP app will stop sending until you update its stored key to match.">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="action" value="regen_key">
     <div class="card-actions"><button class="btn btn-warning">Generate new key</button></div>

@@ -1,5 +1,40 @@
 # Release Notes
 
+## v0.2.0 — 2026-07-31
+
+A security-focused release following an internal security review of the
+relay. Upgrading is drop-in for correctly-configured installs — stored
+secrets are re-encrypted automatically on first boot — but note the two
+**breaking requirements** below.
+
+### Breaking / action required
+
+- **`RELAY_ADMIN_PASSWORD` is now required.** The compose file refuses to
+  start without it — there is no `admin/admin` fallback. Installs still
+  using the seeded default password are forced to change it at next login
+  before the rest of the UI unlocks.
+- **`RELAY_SECRET_KEY` is now enforced at boot.** The relay exits instead
+  of silently falling back to an insecure development key.
+
+### Security highlights
+
+- All dependency advisories cleared (Flask ≥ 3.1.3,
+  cryptography ≥ 48.0.1); `pip-audit` now runs in CI.
+- Login lockout (5 failures/minute per IP) and a per-IP `/api/send`
+  rate ceiling (`RELAY_SEND_PER_HOUR`, default 60/hour).
+- Open-redirect fix on the login `next` parameter.
+- HKDF-based key derivation for sessions and at-rest encryption, with
+  transparent migration of previously stored secrets.
+- Strict security headers (CSP, `X-Frame-Options`,
+  `X-Content-Type-Options`, `Referrer-Policy`) on every response.
+- `X-Forwarded-For` honoured only from `RELAY_TRUSTED_PROXIES`.
+- Generic SMTP errors to API callers; detail stays in the admin log.
+- Container now runs as an unprivileged user; `/healthz` minimized to a
+  bare liveness probe; 100-recipient cap per message; settings changes
+  recorded in an audit table.
+
+See `CHANGELOG.md` for the complete list.
+
 ## v0.1.2 — 2026-07-04
 
 A maintenance release: the project has moved to the **`hyprlab`**

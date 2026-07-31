@@ -68,11 +68,17 @@ services:
       #   python -c "import secrets; print(secrets.token_urlsafe(48))"
       - RELAY_SECRET_KEY=${RELAY_SECRET_KEY:?set RELAY_SECRET_KEY in .env}
       # First-boot admin login (ignored once the admin row exists).
+      # REQUIRED — there is no admin/admin fallback.
       - RELAY_ADMIN_USER=${RELAY_ADMIN_USER:-admin}
-      - RELAY_ADMIN_PASSWORD=${RELAY_ADMIN_PASSWORD:-admin}
+      - RELAY_ADMIN_PASSWORD=${RELAY_ADMIN_PASSWORD:?set RELAY_ADMIN_PASSWORD in .env}
       - RELAY_LOG_LEVEL=${RELAY_LOG_LEVEL:-INFO}
       # Set to 1 ONLY for local HTTP testing without TLS.
       - RELAY_INSECURE_COOKIES=${RELAY_INSECURE_COOKIES:-}
+      # Reverse proxies (IPs/CIDRs) whose X-Forwarded-For may be trusted
+      # for logged client IPs. Leave blank to log the direct peer.
+      - RELAY_TRUSTED_PROXIES=${RELAY_TRUSTED_PROXIES:-}
+      # Per-IP ceiling on /api/send requests per hour (0 disables).
+      - RELAY_SEND_PER_HOUR=${RELAY_SEND_PER_HOUR:-60}
     volumes:
       - ./data:/data        # relay.db (settings, admin, transaction log)
     restart: unless-stopped
@@ -93,6 +99,7 @@ services:
 RELAY_SECRET_KEY=replace-with-a-long-random-value
 
 # First-boot admin login (change the password from the UI afterwards).
+# REQUIRED — the container refuses to start without a password.
 RELAY_ADMIN_USER=admin
 RELAY_ADMIN_PASSWORD=change-me-on-first-login
 ```
@@ -135,6 +142,18 @@ location / {
 
 Then point the TSP app at `https://relay.example.com`.
 
+Two proxy-related settings worth adding:
+
+- **HSTS** — the relay does not emit `Strict-Transport-Security` itself
+  (it never knows whether TLS is in play); set it at the proxy, e.g.
+  nginx `add_header Strict-Transport-Security "max-age=31536000" always;`
+  (Caddy sends sensible defaults with a `header` directive).
+- **`RELAY_TRUSTED_PROXIES`** — set it to your proxy's address as seen by
+  the relay (for the compose setup above, the docker bridge, e.g.
+  `172.16.0.0/12`). Only then is `X-Forwarded-For` honoured for the
+  client IPs shown in the Transaction Log; otherwise the header is
+  ignored so clients can't spoof their logged address.
+
 ## Configure the TSP app
 
 In the portal: **Settings → Domain / Email**
@@ -168,20 +187,26 @@ Header: `Authorization: Bearer <api-key>` · Body: JSON
 ```
 
 `200 {"ok": true}` on success; otherwise `{"ok": false, "error": "..."}`
-with `401` (bad key), `403` (From not allowed), `413` (attachments too
-big), or `502` (SMTP failed).
+with `401` (bad key), `403` (From not allowed), `413` (attachments or
+request body too big), `429` (per-IP rate limit — see
+`RELAY_SEND_PER_HOUR`), or `502` (SMTP failed — the response is generic;
+delivery details appear only in the relay's Transaction Log). Messages
+are capped at 100 recipients (`400`).
 
 ### `GET /healthz`
-Unauthenticated liveness probe; reports whether SMTP + an API key are
-configured, without leaking secrets.
+Unauthenticated liveness probe; returns `{"ok": true}` only.
+Configuration state is available to authenticated callers via
+`GET /api/health` (Bearer-authenticated).
 
 ## Environment variables
 
 | Var | Required | Default | Notes |
 |-----|----------|---------|-------|
-| `RELAY_SECRET_KEY` | ✅ | — | Signs sessions + encrypts stored secrets. Keep it stable — rotating it invalidates the stored SMTP password + API key. |
+| `RELAY_SECRET_KEY` | ✅ | — | Signs sessions + encrypts stored secrets (HKDF-derived keys). The relay **refuses to start** without it. Keep it stable — rotating it invalidates the stored SMTP password + API key. Use 32+ chars. |
 | `RELAY_ADMIN_USER` | | `admin` | First-boot admin username. |
-| `RELAY_ADMIN_PASSWORD` | | `admin` | First-boot password — change it in the UI. |
+| `RELAY_ADMIN_PASSWORD` | ✅ | — | First-boot password (compose refuses to start without it). If it is ever seeded as `admin`, the UI forces a password change at first login. |
+| `RELAY_TRUSTED_PROXIES` | | — | Comma-separated IPs/CIDRs of reverse proxies whose `X-Forwarded-For` is trusted for logged client IPs. Blank = log the direct peer. |
+| `RELAY_SEND_PER_HOUR` | | `60` | Per-IP ceiling on `/api/send` requests per hour; `0` disables. Login is separately throttled (5 failures/minute per IP). |
 | `RELAY_LOG_LEVEL` | | `INFO` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`. |
 | `RELAY_INSECURE_COOKIES` | | — | Set `1` only for local HTTP testing (no TLS). |
 | `RELAY_DATA_DIR` | | `/data` | Where `relay.db` lives. |
@@ -193,20 +218,44 @@ senders, attachment limit, Turnstile keys) is managed from the
 ## Local end-to-end test
 
 `docker-compose.test.yml` (in this repo) brings up the relay built from
-source plus a **Mailpit** SMTP sink to verify delivery. Mailpit's inbox
-is bound to localhost only; the relay UI is on the LAN. See the comments
-at the top of that file.
+source plus a **Mailpit** SMTP sink to verify delivery. Both the relay
+UI and Mailpit's inbox are bound to localhost only, and the stack
+requires `RELAY_SECRET_KEY` + `RELAY_ADMIN_PASSWORD` in the environment.
+See the comments at the top of that file.
 
 ## Security notes
 
-- Always run the UI + API behind TLS in production.
-- Change the seeded admin password immediately (Settings → Admin account).
-- Keep `RELAY_SECRET_KEY` long, random, and stable.
-- Use the **Allowed From** list so a leaked key can't be used to spoof
-  arbitrary senders.
+Built in:
+
+- Sessions and at-rest encryption keys are HKDF-derived from
+  `RELAY_SECRET_KEY`; the relay refuses to boot without one.
+- Forced password change whenever the admin account carries the seeded
+  default password.
+- Login lockout (5 failures/minute per IP) and a per-IP `/api/send`
+  ceiling (`RELAY_SEND_PER_HOUR`).
+- Security response headers on every page (CSP, `X-Frame-Options`,
+  `X-Content-Type-Options`, `Referrer-Policy`).
+- 100-recipient cap per message; SMTP error details are kept out of API
+  responses (they appear in the Transaction Log only).
+- Settings/credential changes and log clears are recorded in a
+  `settings_audit` table inside `relay.db` (who / when / from where).
+- The container runs as an unprivileged user (uid 1000).
+
+Operator checklist:
+
+- Always run the UI + API behind TLS in production, and set **HSTS** at
+  the reverse proxy (see *TLS in production*).
+- **Populate the Allowed From list.** Blank accepts any sender — set it
+  so a leaked key can't spoof arbitrary addresses.
+- Keep `RELAY_SECRET_KEY` long (32+ chars), random, and stable.
+- Set `RELAY_TRUSTED_PROXIES` so Transaction Log IPs are accurate and
+  spoof-proof.
+- The API key is a plain bearer token with no replay protection — TLS
+  end-to-end between the TSP app and the relay is what protects it.
 - Optionally enable **Cloudflare Turnstile** (Settings → Login bot
   protection) to challenge the sign-in page. The relay needs outbound
-  HTTPS to `challenges.cloudflare.com` for verification.
+  HTTPS to `challenges.cloudflare.com` for verification, and verifies the
+  token's `hostname` matches this relay.
 
 ## License
 

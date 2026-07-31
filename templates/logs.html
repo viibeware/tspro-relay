@@ -19,7 +19,7 @@
   <div class="card-head card-head-split">
     <span>Recent transactions <span class="muted smaller">(showing latest {{ shown }})</span></span>
     {% if rows %}
-    <form method="post" action="{{ url_for('logs_clear') }}" onsubmit="return confirm('Clear the entire transaction log? This cannot be undone.')">
+    <form method="post" action="{{ url_for('logs_clear') }}" data-confirm="Clear the entire transaction log? This cannot be undone.">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="btn btn-ghost btn-sm" type="submit">Clear log</button>
     </form>
@@ -40,6 +40,7 @@
             {% if r['status']=='sent' %}<span class="badge badge-ok">Sent</span>
             {% elif r['status']=='failed' %}<span class="badge badge-fail">Failed</span>
             {% elif r['status']=='unauthorized' %}<span class="badge badge-warn">Unauthorized</span>
+            {% elif r['status']=='rate_limited' %}<span class="badge badge-warn">Rate limited</span>
             {% else %}<span class="badge">{{ r['status'] }}</span>{% endif %}
           </td>
           <td class="trunc">{{ r['from_email'] or '—' }}</td>
